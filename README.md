@@ -3,8 +3,9 @@
 Tunel SSH para Android. Enruta **todo el trafico del telefono** a traves de un
 servidor SSH propio (VPS), usando `VpnService` + `tun2socks`.
 
-> Estado: **Fase 1** (esqueleto + CI). La app compila y muestra el selector de
-> modo de tunel; la conexion SSH real llega en la Fase 2.
+> Estado: **Fase 2** (conexion SSH + SOCKS5 local). La app se conecta al VPS con
+> usuario/contrasena, levanta un proxy SOCKS5 local y verifica la IP de salida.
+> El `VpnService` (todo el trafico) llega en la Fase 3.
 
 ## Arquitectura
 
@@ -63,7 +64,7 @@ Crea el usuario, habilita contrasena + forwarding en `sshd`, instala
 ## Roadmap
 
 - [x] **Fase 1** - esqueleto + CI que compila el APK
-- [ ] **Fase 2** - login SSH real + SOCKS local + prueba HTTP in-app
+- [x] **Fase 2** - login SSH real + SOCKS5 local (MINA SSHD) + prueba HTTP in-app
 - [ ] **Fase 3** - `VpnService` + tun2socks nativo (todo el trafico)
 - [ ] **Fase 4** - UDP/udpgw, DNS, kill-switch, IPv6, MTU
 - [ ] **Fase 5** - UI final, firma de release, documentacion

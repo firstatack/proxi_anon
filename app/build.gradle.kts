@@ -12,8 +12,8 @@ android {
         applicationId = "com.proxianon.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     buildTypes {
@@ -38,11 +38,29 @@ android {
     buildFeatures {
         compose = true
     }
+
+    // Varios jars (MINA, slf4j) traen ficheros META-INF duplicados que rompen el merge.
+    packaging {
+        resources {
+            excludes += setOf(
+                "META-INF/DEPENDENCIES",
+                "META-INF/LICENSE",
+                "META-INF/LICENSE.txt",
+                "META-INF/NOTICE",
+                "META-INF/NOTICE.txt",
+                "META-INF/INDEX.LIST",
+                "META-INF/*.SF",
+                "META-INF/*.DSA",
+                "META-INF/*.RSA",
+            )
+        }
+    }
 }
 
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.activity.compose)
 
     implementation(platform(libs.androidx.compose.bom))
@@ -50,6 +68,14 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
+
+    implementation(libs.kotlinx.coroutines.android)
+
+    // SSH (Apache MINA SSHD, Java 8 bytecode -> compatible con Android)
+    implementation(libs.mina.sshd)
+    // Soporte de host keys ed25519 (lo que usa OpenSSH por defecto)
+    implementation(libs.eddsa)
+    runtimeOnly(libs.slf4j.nop)
 
     debugImplementation(libs.androidx.ui.tooling)
 }
