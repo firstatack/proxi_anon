@@ -52,13 +52,23 @@ class Tun2SocksProcess(private val context: Context) {
                     "; empaquetadas: ${bundledAbis().joinToString().ifEmpty { "ninguna" }})"
             )
 
-        if (!exe.exists() || marker.textOrNull() != abi) {
+        val expectedSize = context.assets.open("tun2socks/$abi/tun2socks").use { it.available() }.toLong()
+        if (!exe.exists() || marker.textOrNull() != abi || exe.length() != expectedSize) {
+            // Re-extrae si falta, cambio de ABI o el archivo esta truncado/corrupto.
             dir.mkdirs()
             context.assets.open("tun2socks/$abi/tun2socks").use { input ->
                 exe.outputStream().use { output -> input.copyTo(output) }
             }
-            exe.setExecutable(true, true)
             marker.writeText(abi)
+        }
+
+        // Garantiza el bit de ejecucion SIEMPRE (un binario copiado en una instalacion
+        // anterior puede haberlo perdido -> exec falla con EACCES / error=13).
+        if (!exe.canExecute() || !exe.setExecutable(true, false)) {
+            runCatching { android.system.Os.chmod(exe.absolutePath, 0x1ED) } // 0755
+        }
+        if (!exe.canExecute()) {
+            throw IllegalStateException("tun2socks sin permiso de ejecucion (EACCES) en ${exe.absolutePath}")
         }
         return exe
     }
