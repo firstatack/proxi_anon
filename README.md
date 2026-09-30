@@ -97,12 +97,13 @@ NoClassDefFoundError: javax/management/... <- ...`
 ### Fase 3 - como funciona
 
 ```
-[apps] TCP ------------> 0.0.0.0/0 -> interfaz TUN -> tun2socks (gvisor)
+[apps] TCP ------------> 0.0.0.0/0 -> interfaz TUN -> la app lee los paquetes
+                                |                      -> tun2socks (socketpair)
                                 |                      |
                                 |        [SOCKS5 local 127.0.0.1]
                                 |                      |
                                 +-> SshTunnel (MINA) -> VPS -> Internet
-[apps] DNS (UDP:53) -> 127.0.0.1 -> DnsProxy (DNS over TCP via SOCKS) -> 1.1.1.1
+[apps] DNS (UDP:53) -> se intercepta en la app -> DNS over TCP via SOCKS -> 1.1.1.1
 ```
 
 - `tun2socks` (Go/gvisor) se compila en el CI del repo (paso "Compilar tun2socks")

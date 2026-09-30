@@ -11,8 +11,6 @@ import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import android.system.Os
-import android.system.OsConstants
 import com.proxianon.app.R
 import com.proxianon.app.ssh.SshTunnel
 import kotlinx.coroutines.CoroutineScope
@@ -26,9 +24,11 @@ import kotlinx.coroutines.withContext
  * Modo VPN (Fase 3): enruta TODO el trafico del telefono por el tunel SSH.
  *
  * Pipeline:
- *   [apps] TCP -> ruta 0.0.0.0/0 -> interfaz TUN -> fd -> tun2socks (gvisor)
- *          -> SOCKS5 local (127.0.0.1) -> SshTunnel -> VPS -> Internet
- *   [apps] DNS (UDP:53) -> 127.0.0.1 -> DnsProxy (TCP via SOCKS) -> 1.1.1.1
+ *   [apps] TCP -> ruta 0.0.0.0/0 -> interfaz TUN -> la app lee los paquetes
+ *          -> tun2socks (gvisor, via socketpair "fd://") -> SOCKS5 local
+ *          -> SshTunnel -> VPS -> Internet
+ *   [apps] DNS (UDP:53) -> la app lo intercepta en el TUN -> DnsForwarder
+ *          (DNS over TCP via SOCKS) -> 1.1.1.1
  *
  * La propia app se excluye del VPN (addDisallowedApplication): el socket SSH y el
  * del DNS proxy salen directo y no hay bucle en el TUN (no hace falta protect()
@@ -40,7 +40,7 @@ class TunnelVpnService : VpnService() {
     private var ssh: SshTunnel? = null
     private var tunFd: ParcelFileDescriptor? = null
     private var tun2socks: Tun2SocksProcess? = null
-    private var dns: DnsProxy? = null
+    private var dns: DnsForwarder? = null
     private var running = false
 
     // ---------------------------------------------------------------- ciclo
@@ -95,7 +95,9 @@ class TunnelVpnService : VpnService() {
             val builder = Builder()
             builder.addAddress("10.8.0.2", 24)
             builder.addRoute("0.0.0.0", 0)
-            builder.addDnsServer("127.0.0.1") // nuestro DnsProxy escucha aqui
+            // El DNS se anuncia con una IP publica valida (VpnService rechaza loopback
+            // con "Bad address"); la app interceptara esos paquetes UDP:53 en el TUN.
+            builder.addDnsServer("1.1.1.1")
             builder.setMtu(MTU)
             builder.setSession("ProxiAnon")
             // Evita el bucle: el trafico de esta app (SSH, DNS proxy) sale directo.
@@ -104,17 +106,14 @@ class TunnelVpnService : VpnService() {
             val fd = builder.establish()
             if (fd == null) throw IllegalStateException("establish() devolvio null")
             tunFd = fd
-            // Defensivo: que el fd sobreviva al exec de tun2socks.
-            runCatching { Os.fcntlInt(fd.fileDescriptor, OsConstants.F_SETFD, 0) }
             VpnState.log("VPN: interfaz TUN creada (fd=${fd.fd})")
 
-            // 3) tun2socks: TUN -> SOCKS5; y proxy DNS local.
+            // 3) tun2socks (la app bombea TUN<->tun2socks y intercepta DNS).
             VpnState.log("VPN: lanzando tun2socks ...")
+            val dnsForwarder = DnsForwarder(socksPort = socksPort)
+            dns = dnsForwarder
             tun2socks = Tun2SocksProcess(this).also {
-                it.start(fd.fd, socksPort, MTU) { line -> VpnState.log(line) }
-            }
-            dns = DnsProxy(socksPort = socksPort).also { proxy ->
-                proxy.start { line -> VpnState.log(line) }
+                it.start(fd, socksPort, MTU, dnsForwarder) { line -> VpnState.log(line) }
             }
 
             running = true
@@ -137,7 +136,6 @@ class TunnelVpnService : VpnService() {
     private fun stopVpn() {
         running = false
         runCatching { tun2socks?.stop() }
-        runCatching { dns?.stop() }
         runCatching { tunFd?.close() }
         tunFd = null
         tun2socks = null
