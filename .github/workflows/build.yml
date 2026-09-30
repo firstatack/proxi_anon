@@ -27,6 +27,25 @@ jobs:
       - name: Set up Gradle (con cache)
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Set up Go (para compilar tun2socks)
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+
+      - name: Compilar tun2socks y empaquetarlo en assets
+        run: |
+          set -euxo pipefail
+          git clone --depth 1 --branch v2.7.0 https://github.com/xjasonlyu/tun2socks.git /tmp/tun2socks
+          cd /tmp/tun2socks
+          declare -A ABIS=( ["arm64"]="arm64-v8a" ["arm"]="armeabi-v7a" ["amd64"]="x86_64" )
+          for goarch in "${!ABIS[@]}"; do
+            abidir="${ABIS[$goarch]}"
+            GOOS=android GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "tun2socks-$goarch" .
+            mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/$abidir"
+            mv "tun2socks-$goarch" "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/$abidir/tun2socks"
+          done
+          chmod 755 "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks"/*/tun2socks
+
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 

@@ -3,9 +3,10 @@
 Tunel SSH para Android. Enruta **todo el trafico del telefono** a traves de un
 servidor SSH propio (VPS), usando `VpnService` + `tun2socks`.
 
-> Estado: **Fase 2** (conexion SSH + SOCKS5 local). La app se conecta al VPS con
-> usuario/contrasena, levanta un proxy SOCKS5 local y verifica la IP de salida.
-> El `VpnService` (todo el trafico) llega en la Fase 3.
+> Estado: **Fase 3** (VPN de todo el trafico, TCP). La app te conecta por
+> usuario/contrasena, levanta un SOCKS5 local, y el modo VPN enruta TODO el
+> trafico del telefono por el tunel (interfaz TUN + `tun2socks`). El UDP
+> (QUIC/VoIP/dns nativo) llega en la Fase 4 con `badvpn-udpgw`.
 
 ## Arquitectura
 
@@ -89,9 +90,31 @@ NoClassDefFoundError: javax/management/... <- ...`
 
 - [x] **Fase 1** - esqueleto + CI que compila el APK
 - [x] **Fase 2** - login SSH real + SOCKS5 local (MINA SSHD) + prueba HTTP in-app
-- [ ] **Fase 3** - `VpnService` + tun2socks nativo (todo el trafico)
-- [ ] **Fase 4** - UDP/udpgw, DNS, kill-switch, IPv6, MTU
+- [x] **Fase 3** - `VpnService` + `tun2socks` (TODO el trafico, TCP) + DNS sin fugas
+- [ ] **Fase 4** - UDP/udpgw, DNS nativo, kill-switch, IPv6, MTU
 - [ ] **Fase 5** - UI final, firma de release, documentacion
+
+### Fase 3 - como funciona
+
+```
+[apps] TCP ------------> 0.0.0.0/0 -> interfaz TUN -> tun2socks (gvisor)
+                                |                      |
+                                |        [SOCKS5 local 127.0.0.1]
+                                |                      |
+                                +-> SshTunnel (MINA) -> VPS -> Internet
+[apps] DNS (UDP:53) -> 127.0.0.1 -> DnsProxy (DNS over TCP via SOCKS) -> 1.1.1.1
+```
+
+- `tun2socks` (Go/gvisor) se compila en el CI del repo (paso "Compilar tun2socks")
+  y viaja dentro del APK en `app/src/main/assets/tun2socks/<abi>/`. Si compilas
+  sin pasar por el CI, el binario no existira y el boton VPN dara error.
+- La app se excluye del VPN (`addDisallowedApplication`): el socket SSH y el DNS
+  proxy salen directo, evitando el bucle sin necesidad de `protect()` sobre el
+  canal NIO2 de MINA.
+- DNS sin fugas en modo TCP: un proxy local en `127.0.0.1:53` reenvia cada
+  consulta por DNS-over-TCP a 1.1.1.1 **a traves del SOCKS5** (sale por el VPS).
+- En MIUI/Xiaomi: activa el autostart y quita la restriccion de bateria de
+  ProxiAnon, o el servicio de VPN puede morir en segundo plano.
 
 ## Aviso legal
 

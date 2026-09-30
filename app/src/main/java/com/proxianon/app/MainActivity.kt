@@ -1,9 +1,16 @@
 package com.proxianon.app
 
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.VpnService
+import android.os.Build
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -39,26 +46,83 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.proxianon.app.ssh.TunnelStatus
+import com.proxianon.app.vpn.TunnelVpnService
+import com.proxianon.app.vpn.VpnUiState
 
 class MainActivity : ComponentActivity() {
+
+    private val vpnConsentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            startVpnService()
+        } else {
+            Toast.makeText(this, "VPN: permiso denegado", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HomeScreen()
+                    HomeScreen(
+                        vm = viewModel(),
+                        onStartVpn = ::onStartVpnClick,
+                        onStopVpn = ::onStopVpnClick,
+                    )
                 }
             }
+        }
+    }
+
+    private fun onStartVpnClick(vm: MainViewModel) {
+        if (vm.prepareVpnStart() == null) {
+            Toast.makeText(this, "Completa host y usuario primero", Toast.LENGTH_SHORT).show()
+            return
+        }
+        requestNotificationPermission()
+        val intent = VpnService.prepare(this)
+        if (intent != null) {
+            vpnConsentLauncher.launch(intent)
+        } else {
+            startVpnService()
+        }
+    }
+
+    private fun startVpnService() {
+        ContextCompat.startForegroundService(this, Intent(this, TunnelVpnService::class.java))
+    }
+
+    private fun onStopVpnClick() {
+        startService(
+            Intent(this, TunnelVpnService::class.java)
+                .setAction(TunnelVpnService.ACTION_STOP)
+        )
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
     }
 }
 
 @Composable
-fun HomeScreen(vm: MainViewModel = viewModel()) {
+fun HomeScreen(
+    vm: MainViewModel = viewModel(),
+    onStartVpn: (MainViewModel) -> Unit = {},
+    onStopVpn: () -> Unit = {},
+) {
     val state by vm.state.collectAsState()
+    val vpnState by vm.vpnState.collectAsState()
+    val vpnLog by vm.vpnLog.collectAsState()
 
     Column(
         modifier = Modifier
@@ -69,7 +133,7 @@ fun HomeScreen(vm: MainViewModel = viewModel()) {
     ) {
         Text("ProxiAnon", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Tunel SSH. Fase 2: conexion + SOCKS5 local.",
+            "Tunel SSH. Fase 3: VPN (todo el trafico) + SOCKS5 local.",
             style = MaterialTheme.typography.bodySmall
         )
 
@@ -172,6 +236,13 @@ fun HomeScreen(vm: MainViewModel = viewModel()) {
             Text("IP de salida: $it", style = MaterialTheme.typography.bodyMedium)
         }
 
+        VpnSection(
+            vpnState = vpnState,
+            vpnLog = vpnLog,
+            onStartVpn = { onStartVpn(vm) },
+            onStopVpn = onStopVpn,
+        )
+
         if (state.log.isNotEmpty()) {
             Text("Registro", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
             Text(
@@ -196,6 +267,59 @@ private fun StatusLine(status: TunnelStatus) {
             CircularProgressIndicator(modifier = Modifier.width(16.dp), strokeWidth = 2.dp)
         }
         Text(text, color = color, fontWeight = FontWeight.Medium)
+    }
+}
+
+@Composable
+private fun VpnSection(
+    vpnState: VpnUiState,
+    vpnLog: List<String>,
+    onStartVpn: () -> Unit,
+    onStopVpn: () -> Unit,
+) {
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text("VPN - todo el trafico", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+
+            val vpnActive = vpnState == VpnUiState.On
+            val vpnStarting = vpnState == VpnUiState.Starting
+            val statusText = when (vpnState) {
+                VpnUiState.Off -> "Desconectado"
+                VpnUiState.Starting -> "Conectando VPN..."
+                VpnUiState.On -> "ACTIVO - todo el trafico por el tunel"
+                is VpnUiState.Error -> "Error: ${vpnState.message}"
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (vpnStarting) {
+                    CircularProgressIndicator(modifier = Modifier.width(16.dp), strokeWidth = 2.dp)
+                }
+                Text(
+                    statusText,
+                    color = if (vpnActive) Color(0xFF2E7D32) else MaterialTheme.colorScheme.onSurface,
+                    fontWeight = FontWeight.Medium
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                if (vpnActive || vpnStarting) {
+                    OutlinedButton(onClick = onStopVpn, modifier = Modifier.weight(1f)) {
+                        Text("Detener VPN")
+                    }
+                } else {
+                    Button(onClick = onStartVpn, modifier = Modifier.weight(1f)) {
+                        Text("Activar VPN")
+                    }
+                }
+            }
+
+            if (vpnLog.isNotEmpty()) {
+                Text(
+                    text = vpnLog.joinToString("\n"),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
     }
 }
 

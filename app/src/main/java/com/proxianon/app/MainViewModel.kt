@@ -4,6 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.proxianon.app.ssh.SshTunnel
 import com.proxianon.app.ssh.TunnelStatus
+import com.proxianon.app.vpn.SshCredentials
+import com.proxianon.app.vpn.VpnSession
+import com.proxianon.app.vpn.VpnState
+import com.proxianon.app.vpn.VpnUiState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +33,25 @@ class MainViewModel : ViewModel() {
     private val tunnel = SshTunnel()
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
+
+    /** Estado del modo VPN (lo gestiona TunnelVpnService). */
+    val vpnState: StateFlow<VpnUiState> = VpnState.flow
+    val vpnLog: StateFlow<List<String>> = VpnState.log
+
+    /** Crea la peticion VPN a partir del formulario actual (los datos se copian, no referencias). */
+    fun buildVpnRequest(): SshCredentials? {
+        val s = _state.value
+        if (s.host.isBlank() || s.username.isBlank()) return null
+        return SshCredentials(
+            host = s.host,
+            port = s.port.toIntOrNull() ?: 22,
+            username = s.username,
+            password = s.password,
+        )
+    }
+
+    /** Valida y deja la config de la sesion VPN lista para TunnelVpnService. */
+    fun prepareVpnStart(): SshCredentials? = buildVpnRequest()?.also { VpnSession.request = it }
 
     fun onHost(v: String) = _state.update { it.copy(host = v.trim()) }
     fun onPort(v: String) = _state.update { it.copy(port = v.filter(Char::isDigit)) }
