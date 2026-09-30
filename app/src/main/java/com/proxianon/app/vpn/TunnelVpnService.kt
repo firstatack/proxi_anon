@@ -91,7 +91,8 @@ class TunnelVpnService : VpnService() {
             VpnState.log("VPN: SSH OK, SOCKS5 local en 127.0.0.1:$socksPort")
 
             // 2) Interfaz TUN (captura todo el trafico IPv4 salvo la propia app).
-            val builder = VpnService.Builder()
+            // Builder es clase inner de VpnService: desde la subclase se usa `Builder()`.
+            val builder = Builder()
             builder.addAddress("10.8.0.2", 24)
             builder.addRoute("0.0.0.0", 0)
             builder.addDnsServer("127.0.0.1") // nuestro DnsProxy escucha aqui
@@ -104,7 +105,7 @@ class TunnelVpnService : VpnService() {
             if (fd == null) throw IllegalStateException("establish() devolvio null")
             tunFd = fd
             // Defensivo: que el fd sobreviva al exec de tun2socks.
-            runCatching { Os.fcntlInt(fd.fd, OsConstants.F_SETFD, 0) }
+            runCatching { Os.fcntlInt(fd.fileDescriptor, OsConstants.F_SETFD, 0) }
             VpnState.log("VPN: interfaz TUN creada (fd=${fd.fd})")
 
             // 3) tun2socks: TUN -> SOCKS5; y proxy DNS local.
