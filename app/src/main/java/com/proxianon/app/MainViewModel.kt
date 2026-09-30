@@ -40,6 +40,18 @@ class MainViewModel : ViewModel() {
         _state.update { it.copy(log = (it.log + line).takeLast(300)) }
     }
 
+    /** Formatea la cadena completa de causas (ExceptionInInitializerError suele tener message null). */
+    private fun describe(t: Throwable): String {
+        val parts = mutableListOf<String>()
+        var cur: Throwable? = t
+        while (cur != null) {
+            val msg = cur.message
+            parts += if (msg.isNullOrBlank()) cur::class.java.simpleName else "${cur::class.java.simpleName}: $msg"
+            cur = cur.cause
+        }
+        return parts.joinToString(" <- ")
+    }
+
     fun connect() {
         val s = _state.value
         if (s.status is TunnelStatus.Connecting || s.status is TunnelStatus.Connected) return
@@ -60,7 +72,7 @@ class MainViewModel : ViewModel() {
                 _state.update { it.copy(status = TunnelStatus.Connected(socksPort)) }
                 testExitInternal(socksPort)
             } catch (t: Throwable) {
-                val msg = t.message ?: t::class.java.simpleName
+                val msg = describe(t)
                 log("Fallo: $msg")
                 _state.update { it.copy(status = TunnelStatus.Error(msg)) }
             }
@@ -92,7 +104,7 @@ class MainViewModel : ViewModel() {
                 log("Salida: $body")
                 _state.update { it.copy(checking = false, exitInfo = body) }
             } catch (t: Throwable) {
-                val msg = t.message ?: t::class.java.simpleName
+                val msg = describe(t)
                 log("Prueba fallida: $msg")
                 _state.update { it.copy(checking = false, exitInfo = "Error: $msg") }
             }

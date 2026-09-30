@@ -75,6 +75,12 @@ dependencies {
     implementation(libs.mina.sshd)
     // Soporte de host keys ed25519 (lo que usa OpenSSH por defecto)
     implementation(libs.eddsa)
+    // BouncyCastle completo: MINA SSHD 2.18 resuelve las entidades de seguridad
+    // (EC, ECDSA, ed25519, etc.) durante la inicializacion estatica, y el BC
+    // interno/recortado de Android no basta -> sin esto, al conectar lanza
+    // ExceptionInInitializerError (NoClassDefFoundError: javax/management.*)
+    // dentro de ExceptionUtils.peelException(). Se registra en ProxiAnonApp.
+    implementation(libs.bouncycastle)
     runtimeOnly(libs.slf4j.nop)
 
     debugImplementation(libs.androidx.ui.tooling)

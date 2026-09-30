@@ -61,6 +61,30 @@ sudo TUNNEL_PASSWORD='una-contrasena-larga' ./scripts/vps-setup.sh
 Crea el usuario, habilita contrasena + forwarding en `sshd`, instala
 `badvpn-udpgw` (UDP sobre TCP) y `fail2ban`.
 
+## Notas: MINA SSHD en Android (`ExceptionInInitializerError`)
+
+MINA SSHD no soporta Android de forma oficial (solo ofrece "hooks"). Con
+`sshd-core >= 2.14` la inicializacion estatica (`ECCurves.<clinit>`,
+`BuiltinSignatures.<clinit>`) resuelve entidades de seguridad de forma eager y,
+si falla en los providers de Android, `ExceptionUtils.peelException()` referencia
+`javax.management.*` (inexistente en Android) -> `NoClassDefFoundError` ->
+`ExceptionInInitializerError` al conectar. La app compila porque el problema es
+de runtime (class loading perezoso, no de bytecode).
+
+La solucion aplicada en este repo (`ProxiAnonApp`):
+
+1. **BouncyCastle completo** (`bcprov-jdk18on`) reemplaza al "BC" interno de
+   Android (recortado): `Security.removeProvider("BC")` +
+   `Security.addProvider(BouncyCastleProvider())` en `onCreate`.
+2. **Hooks de Android de MINA**: `OsUtils.setAndroid(true)` + valores para
+   `user.home` / `user.dir` / `user.name` (null en Android y pueden romper
+   codigo perezoso de sshd). Ver `docs/android.md` de MINA.
+
+Si vuelve a fallar, el log de la app ahora muestra la **cadena completa de
+causas** (antes se mostraba solo el `message`, que para
+`ExceptionInInitializerError` es null): `ExceptionInInitializerError <-
+NoClassDefFoundError: javax/management/... <- ...`
+
 ## Roadmap
 
 - [x] **Fase 1** - esqueleto + CI que compila el APK
