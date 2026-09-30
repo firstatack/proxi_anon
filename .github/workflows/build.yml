@@ -32,18 +32,40 @@ jobs:
         with:
           go-version: 'stable'
 
-      - name: Compilar tun2socks y empaquetarlo en assets
+      - name: Instalar NDK (para armeabi-v7a y x86_64)
+        run: |
+          SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          SDKMANAGER="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "ndk;27.2.12479018" >/dev/null
+
+      - name: Compilar tun2socks (arm64-v8a, armeabi-v7a, x86_64)
         run: |
           set -euxo pipefail
           git clone --depth 1 --branch v2.7.0 https://github.com/xjasonlyu/tun2socks.git /tmp/tun2socks
           cd /tmp/tun2socks
-          declare -A ABIS=( ["arm64"]="arm64-v8a" ["arm"]="armeabi-v7a" ["amd64"]="x86_64" )
-          for goarch in "${!ABIS[@]}"; do
-            abidir="${ABIS[$goarch]}"
-            GOOS=android GOARCH="$goarch" CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o "tun2socks-$goarch" .
-            mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/$abidir"
-            mv "tun2socks-$goarch" "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/$abidir/tun2socks"
-          done
+          SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
+          CC_PATH="$SDK/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
+          # arm64-v8a: no necesita cgo
+          GOOS=android GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o tun2socks-arm64 .
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/arm64-v8a"
+          cp tun2socks-arm64 "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/arm64-v8a/tun2socks"
+
+          # armeabi-v7a: cgo + clang del NDK (android/arm requiere linkado externo)
+          GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=1 \
+            CC="$CC_PATH/armv7a-linux-androideabi16-clang" \
+            go build -trimpath -ldflags="-s -w" -o tun2socks-arm .
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/armeabi-v7a"
+          cp tun2socks-arm "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/armeabi-v7a/tun2socks"
+
+          # x86_64: cgo + clang del NDK (android/amd64 requiere linkado externo)
+          GOOS=android GOARCH=amd64 CGO_ENABLED=1 \
+            CC="$CC_PATH/x86_64-linux-android21-clang" \
+            go build -trimpath -ldflags="-s -w" -o tun2socks-amd64 .
+          mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/x86_64"
+          cp tun2socks-amd64 "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/x86_64/tun2socks"
+
           chmod 755 "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks"/*/tun2socks
 
       - name: Build debug APK

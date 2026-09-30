@@ -23,18 +23,40 @@ class Tun2SocksProcess(private val context: Context) {
 
     /** Extrae el binario de assets -> filesDir (los assets no admiten bit de ejecucion). */
     private fun extractBinary(): File {
-        val abi = Build.SUPPORTED_ABIS.firstOrNull() ?: "arm64-v8a"
         val dir = File(context.filesDir, "tun2socks")
         val exe = File(dir, "tun2socks")
-        if (!exe.exists()) {
+        val marker = File(dir, ".abi")
+
+        // Elige el primer ABI soportado por el dispositivo que tenga binario empaquetado.
+        val abi = pickAbi()
+            ?: throw IllegalStateException(
+                "No hay tun2socks para este dispositivo (ABIs: " +
+                    Build.SUPPORTED_ABIS.joinToString() +
+                    "; empaquetadas: ${bundledAbis().joinToString().ifEmpty { "ninguna" }})"
+            )
+
+        if (!exe.exists() || marker.textOrNull() != abi) {
             dir.mkdirs()
             context.assets.open("tun2socks/$abi/tun2socks").use { input ->
                 exe.outputStream().use { output -> input.copyTo(output) }
             }
             exe.setExecutable(true, true)
+            marker.writeText(abi)
         }
         return exe
     }
+
+    private fun pickAbi(): String? =
+        Build.SUPPORTED_ABIS.firstOrNull { abi -> hasBundledBinary(abi) }
+
+    /** ABIs para las que el APK trae binario (en assets). */
+    private fun bundledAbis(): List<String> =
+        listOf("arm64-v8a", "armeabi-v7a", "x86_64").filter { hasBundledBinary(it) }
+
+    private fun hasBundledBinary(abi: String): Boolean =
+        runCatching { context.assets.open("tun2socks/$abi/tun2socks").close() }.isSuccess
+
+    private fun File.textOrNull(): String? = runCatching { readText().trim() }.getOrNull()
 
     /**
      * @param tunFd numero de file descriptor de la interfaz TUN (ParcelFileDescriptor.fd).

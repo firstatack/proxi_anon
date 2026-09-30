@@ -106,8 +106,10 @@ NoClassDefFoundError: javax/management/... <- ...`
 ```
 
 - `tun2socks` (Go/gvisor) se compila en el CI del repo (paso "Compilar tun2socks")
-  y viaja dentro del APK en `app/src/main/assets/tun2socks/<abi>/`. Si compilas
-  sin pasar por el CI, el binario no existira y el boton VPN dara error.
+  para las 3 ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`) y viaja dentro del APK
+  en `app/src/main/assets/tun2socks/<abi>/`. `arm64-v8a` se compila sin cgo; las
+  otras dos usan el NDK (`android/arm` y `android/amd64` exigen linkado externo).
+  Si compilas sin pasar por el CI, el binario no existira y el boton VPN dara error.
 - La app se excluye del VPN (`addDisallowedApplication`): el socket SSH y el DNS
   proxy salen directo, evitando el bucle sin necesidad de `protect()` sobre el
   canal NIO2 de MINA.
