@@ -52,9 +52,10 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/arm64-v8a"
           cp tun2socks-arm64 "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/arm64-v8a/tun2socks"
 
-          # armeabi-v7a: cgo + clang del NDK (android/arm requiere linkado externo)
+          # armeabi-v7a: cgo + clang del NDK (android/arm requiere linkado externo).
+          # Ojo: NDK r27 elimino el target API 16 -> minimo API 21.
           GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=1 \
-            CC="$CC_PATH/armv7a-linux-androideabi16-clang" \
+            CC="$CC_PATH/armv7a-linux-androideabi21-clang" \
             go build -trimpath -ldflags="-s -w" -o tun2socks-arm .
           mkdir -p "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/armeabi-v7a"
           cp tun2socks-arm "$GITHUB_WORKSPACE/app/src/main/assets/tun2socks/armeabi-v7a/tun2socks"
