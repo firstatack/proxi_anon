@@ -14,6 +14,13 @@ jobs:
     name: Build debug APK
     runs-on: ubuntu-latest
 
+    # Los secrets solo pueden leerse como env del job; el if de un paso no accede a `secrets`.
+    env:
+      PROXIANON_KEYSTORE_B64: ${{ secrets.PROXIANON_KEYSTORE_B64 }}
+      PROXIANON_KEYSTORE_PASSWORD: ${{ secrets.PROXIANON_KEYSTORE_PASSWORD }}
+      PROXIANON_KEY_ALIAS: ${{ secrets.PROXIANON_KEY_ALIAS }}
+      PROXIANON_KEY_PASSWORD: ${{ secrets.PROXIANON_KEY_PASSWORD }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,18 +74,13 @@ jobs:
         run: ./gradlew assembleDebug --stacktrace
 
       - name: Firmar APK release (si hay keystore en Secrets)
-        if: ${{ secrets.PROXIANON_KEYSTORE_B64 != '' }}
-        env:
-          PROXIANON_KEYSTORE_B64: ${{ secrets.PROXIANON_KEYSTORE_B64 }}
-          PROXIANON_KEYSTORE_PASSWORD: ${{ secrets.PROXIANON_KEYSTORE_PASSWORD }}
-          PROXIANON_KEY_ALIAS: ${{ secrets.PROXIANON_KEY_ALIAS }}
-          PROXIANON_KEY_PASSWORD: ${{ secrets.PROXIANON_KEY_PASSWORD }}
+        if: ${{ env.PROXIANON_KEYSTORE_B64 != '' }}
         run: |
           echo "$PROXIANON_KEYSTORE_B64" | base64 -d > "$HOME/proxianon-release.jks"
           PROXIANON_KEYSTORE_FILE="$HOME/proxianon-release.jks" ./gradlew assembleRelease --stacktrace
 
       - name: Subir APK release (firmado)
-        if: ${{ secrets.PROXIANON_KEYSTORE_B64 != '' }}
+        if: ${{ env.PROXIANON_KEYSTORE_B64 != '' }}
         uses: actions/upload-artifact@v4
         with:
           name: ProxiAnon-release

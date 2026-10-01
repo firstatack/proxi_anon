@@ -28,3 +28,4 @@ Thumbs.db
 *.jks
 keystore.properties
 app/src/main/jniLibs/
+*.jks
