@@ -1,107 +1,39 @@
 package com.proxianon.app.vpn
 
-import android.content.Context
-import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.system.Os
-import android.system.OsConstants
 import kotlin.concurrent.thread
-import java.io.File
 import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
-import java.util.concurrent.TimeUnit
 
 /**
- * Lanza el binario [tun2socks](https://github.com/xjasonlyu/tun2socks) (Go/gvisor)
- * compilado en CI y empaquetado en assets (Fase 3, TCP).
+ * tun2socks (xjasonlyu, gvisor) cargado **como libreria nativa** en el proceso.
  *
- * En vez de pasarle el fd del TUN (asi la app no veria el DNS), la APP lee/escribe
- * la interfaz TUN y tun2socks usa un **socketpair SOCK_DGRAM** como "device"
- * (`-device fd://N`): cada datagrama es un paquete IP.
+ * Android 10+ bloquea por SELinux ejecutar binarios en /data/user/0 (error 13),
+ * asi que tun2socks se compila como `libtun2socks.so` (jniLibs) y se carga con
+ * System.loadLibrary (camino sancionado: dlopen de libs nativas).
  *
- * En el camino la app intercepta DNS (UDP:53) y lo resuelve con [DnsForwarder]
- * (DNS over TCP a traves del SOCKS5 -> sale por el VPS). Lo demas va a tun2socks.
+ * La libreria crea un socketpair SOCK_DGRAM: un extremo queda en Go como
+ * "device" (fd://N) y el otro vuelve a Java. La app lee/escribe el TUN y: los
+ * paquetes UDP:53 los responde [DnsForwarder] (DNS over TCP via SOCKS), el resto
+ * se bombea al socketpair (-> stack gvisor -> SOCKS5 -> SSH -> VPS).
  */
-class Tun2SocksProcess(private val context: Context) {
+class Tun2SocksProcess {
 
-    private var process: Process? = null
-    private var logThread: Thread? = null
+    private var running = false
     private var tunIn: FileInputStream? = null
     private var tunOut: FileOutputStream? = null
-    private var appSockFd: FileDescriptor? = null
-    private var running = false
+    private var appFdPfd: ParcelFileDescriptor? = null
     private var dnsWorkers: ExecutorService? = null
 
     val isRunning: Boolean
-        get() = process?.isAlive == true
+        get() = running
 
-    /** Extrae el binario de assets -> filesDir (los assets no admiten bit de ejecucion). */
-    private fun extractBinary(): File {
-        val dir = File(context.filesDir, "tun2socks")
-        val exe = File(dir, "tun2socks")
-        val marker = File(dir, ".abi")
-
-        // Elige el primer ABI soportado por el dispositivo que tenga binario empaquetado.
-        val abi = pickAbi()
-            ?: throw IllegalStateException(
-                "No hay tun2socks para este dispositivo (ABIs: " +
-                    Build.SUPPORTED_ABIS.joinToString() +
-                    "; empaquetadas: ${bundledAbis().joinToString().ifEmpty { "ninguna" }})"
-            )
-
-        val expectedSize = context.assets.open("tun2socks/$abi/tun2socks").use { it.available() }.toLong()
-        if (!exe.exists() || marker.textOrNull() != abi || exe.length() != expectedSize) {
-            // Re-extrae si falta, cambio de ABI o el archivo esta truncado/corrupto.
-            dir.mkdirs()
-            context.assets.open("tun2socks/$abi/tun2socks").use { input ->
-                exe.outputStream().use { output -> input.copyTo(output) }
-            }
-            marker.writeText(abi)
-        }
-
-        // Garantiza el bit de ejecucion SIEMPRE (un binario copiado en una instalacion
-        // anterior puede haberlo perdido -> exec falla con EACCES / error=13).
-        if (!exe.canExecute() || !exe.setExecutable(true, false)) {
-            runCatching { android.system.Os.chmod(exe.absolutePath, 0x1ED) } // 0755
-        }
-        if (!exe.canExecute()) {
-            throw IllegalStateException("tun2socks sin permiso de ejecucion (EACCES) en ${exe.absolutePath}")
-        }
-        return exe
-    }
-
-    private fun pickAbi(): String? =
-        Build.SUPPORTED_ABIS.firstOrNull { abi -> hasBundledBinary(abi) }
-
-    /** ABIs para las que el APK trae binario (en assets). */
-    private fun bundledAbis(): List<String> =
-        listOf("arm64-v8a", "armeabi-v7a", "x86_64").filter { hasBundledBinary(it) }
-
-    private fun hasBundledBinary(abi: String): Boolean =
-        runCatching { context.assets.open("tun2socks/$abi/tun2socks").close() }.isSuccess
-
-    private fun File.textOrNull(): String? = runCatching { readText().trim() }.getOrNull()
-
-    /**
-     * Numero de fd (int) de un [FileDescriptor]. No hay API publica para obtenerlo;
-     * se lee el campo interno del classloader del sistema (patron estandar en Android).
-     */
-    @Suppress("PrivateApi")
-    private fun FileDescriptor.fdNumber(): Int {
-        val cls = java.io.FileDescriptor::class.java
-        for (name in listOf("fd", "descriptor")) {
-            try {
-                val field = cls.getDeclaredField(name)
-                field.isAccessible = true
-                return field.getInt(this)
-            } catch (_: Exception) {
-                continue
-            }
-        }
-        throw IllegalStateException("No se pudo obtener el fd numerico")
+    init {
+        System.loadLibrary("tun2socks")
     }
 
     /**
@@ -117,28 +49,19 @@ class Tun2SocksProcess(private val context: Context) {
         onLog: (String) -> Unit = {},
     ) {
         stop()
-        val exe = extractBinary()
 
-        // Socketpair AF_UNIX SOCK_DGRAM: cada datagrama es un paquete IP (framing limpio).
-        val fd1 = FileDescriptor()
-        val fd2 = FileDescriptor()
-        Os.socketpair(OsConstants.AF_UNIX, OsConstants.SOCK_DGRAM, 0, fd1, fd2)
-        // Sin FD_CLOEXEC para que el hijo los herede tras exec.
-        Os.fcntlInt(fd1, OsConstants.F_SETFD, 0)
-        Os.fcntlInt(fd2, OsConstants.F_SETFD, 0)
+        // La libreria crea el socketpair y nos devuelve el fd de la app.
+        val appFd = tun2socksOpenPair()
+        if (appFd < 0) throw IllegalStateException("tun2socks: no se pudo crear el socketpair (rc=$appFd)")
+        val appPfd = ParcelFileDescriptor.fromFd(appFd)
+        appFdPfd = appPfd
 
-        val cmd = listOf(
-            exe.absolutePath,
-            "-device", "fd://${fd1.fdNumber()}",
-            "-proxy", "socks5://127.0.0.1:$socksPort",
-            "-mtu", mtu.toString(),
-            "-loglevel", "info",
-        )
-
-        val p = ProcessBuilder(cmd)
-            .redirectErrorStream(true)
-            .start()
-        process = p
+        val rc = tun2socksStart(socksPort, mtu)
+        if (rc != 0) {
+            appPfd.close()
+            appFdPfd = null
+            throw IllegalStateException("tun2socks: start fallo (rc=$rc)")
+        }
         running = true
         dnsWorkers = Executors.newFixedThreadPool(DNS_WORKERS)
 
@@ -146,9 +69,8 @@ class Tun2SocksProcess(private val context: Context) {
         val output = FileOutputStream(tunPfd.fileDescriptor)
         tunIn = input
         tunOut = output
-        appSockFd = fd2
 
-        onLog("tun2socks: fd=${fd1.fdNumber()} proxy=socks5://127.0.0.1:$socksPort")
+        onLog("tun2socks: in-process fd=$appFd proxy=socks5://127.0.0.1:$socksPort")
 
         // TUN -> tun2socks, interceptando DNS en el camino.
         thread(name = "vpn-tun-read", isDaemon = true) {
@@ -169,7 +91,7 @@ class Tun2SocksProcess(private val context: Context) {
                         }
                     } else {
                         try {
-                            Os.write(fd2, packet, 0, packet.size)
+                            Os.write(appPfd.fileDescriptor, packet, 0, packet.size)
                         } catch (_: Exception) {
                             onLog("tun2socks: TUN->proxy write fallo")
                         }
@@ -185,7 +107,7 @@ class Tun2SocksProcess(private val context: Context) {
             val buf = ByteArray(65536)
             while (running) {
                 try {
-                    val n = Os.read(fd2, buf, 0, buf.size)
+                    val n = Os.read(appPfd.fileDescriptor, buf, 0, buf.size)
                     if (n <= 0) continue
                     synchronized(output) { output.write(buf, 0, n) }
                 } catch (e: Exception) {
@@ -193,33 +115,26 @@ class Tun2SocksProcess(private val context: Context) {
                 }
             }
         }
-
-        // Volcar stdout del binario al log compartido (para depuracion).
-        logThread = thread(name = "tun2socks-log", isDaemon = true) {
-            p.inputStream.bufferedReader().forEachLine { line ->
-                if (line.isNotBlank()) onLog("tun2socks: $line")
-            }
-        }
     }
 
     fun stop() {
         running = false
-        logThread?.interrupt()
-        logThread = null
         runCatching { tunIn?.close() }
         runCatching { tunOut?.close() }
         tunIn = null
         tunOut = null
-        appSockFd?.let { runCatching { Os.close(it) } }
-        appSockFd = null
+        runCatching { appFdPfd?.close() }
+        appFdPfd = null
         dnsWorkers?.shutdownNow()
         dnsWorkers = null
-        val p = process ?: return
-        process = null
-        runCatching { p.destroy() }
-        runCatching { p.waitFor(2, TimeUnit.SECONDS) }
-        if (p.isAlive) runCatching { p.destroyForcibly() }
+        runCatching { tun2socksStop() }
     }
+
+    // ------------------------------------------------------------- JNI (libtun2socks.so)
+
+    private external fun tun2socksOpenPair(): Int
+    private external fun tun2socksStart(socksPort: Int, mtu: Int): Int
+    private external fun tun2socksStop()
 
     private companion object {
         const val DNS_WORKERS = 8

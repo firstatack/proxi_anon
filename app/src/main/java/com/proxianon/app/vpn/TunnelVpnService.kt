@@ -112,7 +112,7 @@ class TunnelVpnService : VpnService() {
             VpnState.log("VPN: lanzando tun2socks ...")
             val dnsForwarder = DnsForwarder(socksPort = socksPort)
             dns = dnsForwarder
-            tun2socks = Tun2SocksProcess(this).also {
+            tun2socks = Tun2SocksProcess().also {
                 it.start(fd, socksPort, MTU, dnsForwarder) { line -> VpnState.log(line) }
             }
 

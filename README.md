@@ -106,11 +106,16 @@ NoClassDefFoundError: javax/management/... <- ...`
 [apps] DNS (UDP:53) -> se intercepta en la app -> DNS over TCP via SOCKS -> 1.1.1.1
 ```
 
-- `tun2socks` (Go/gvisor) se compila en el CI del repo (paso "Compilar tun2socks")
-  para las 3 ABIs (`arm64-v8a`, `armeabi-v7a`, `x86_64`) y viaja dentro del APK
-  en `app/src/main/assets/tun2socks/<abi>/`. `arm64-v8a` se compila sin cgo; las
-  otras dos usan el NDK (`android/arm` y `android/amd64` exigen linkado externo).
-  Si compilas sin pasar por el CI, el binario no existira y el boton VPN dara error.
+- `tun2socks` (Go/gvisor) se compila **como libreria nativa `libtun2socks.so`
+  (buildmode c-shared)** en el CI y viaja en `app/src/main/jniLibs/<abi>/` (las 3
+  ABIs: `arm64-v8a`, `armeabi-v7a`, `x86_64`). Se carga con `System.loadLibrary`
+  (dlopen): **ejecutar binarios en `/data/user/0` esta bloqueado por SELinux
+  desde Android 10** (`error=13 Permission denied`), asi que no se ejecuta ningun
+  proceso externo.
+- El wrapper JNI esta en `native/libtun2socks/main.go`: crea un socketpair
+  `SOCK_DGRAM` (un extremo queda en Go como device `fd://`, el otro va a Java) y
+  arranca `engine.Start()` en proceso. La app bombea TUN<->socketpair e
+  intercepta el DNS en el camino.
 - La app se excluye del VPN (`addDisallowedApplication`): el socket SSH y el DNS
   proxy salen directo, evitando el bucle sin necesidad de `protect()` sobre el
   canal NIO2 de MINA.
