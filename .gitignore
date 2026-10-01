@@ -29,3 +29,9 @@ Thumbs.db
 keystore.properties
 app/src/main/jniLibs/
 *.jks
+
+# Credenciales de firma de release (jamas subir)
+*.jks
+*.keystore
+*CREDENTIALS*
+*credentials*
