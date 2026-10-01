@@ -35,3 +35,4 @@ app/src/main/jniLibs/
 *.keystore
 *CREDENTIALS*
 *credentials*
+MANUAL_RELEASE.html
