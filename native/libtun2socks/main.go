@@ -16,11 +16,13 @@ package main
 
 /*
 #include <stdint.h>
+#include <stddef.h>
 */
 import "C"
 
 import (
 	"fmt"
+	"unsafe"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
 	_ "github.com/xjasonlyu/tun2socks/v2/dns"
@@ -34,9 +36,11 @@ var (
 )
 
 // Crea el socketpair y devuelve el fd del lado de la APP (el de Go se queda aqui).
+// OJO con JNI: toda funcion nativa recibe (JNIEnv*, jobject) como primeros
+// argumentos aunque Kotlin no los declare; sin ellos los parametros se desplazan.
 //
 //export Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksOpenPair
-func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksOpenPair() C.int {
+func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksOpenPair(env, thiz unsafe.Pointer) C.int {
 	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return C.int(-1)
@@ -46,9 +50,10 @@ func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksOpenPair() C.int {
 }
 
 // Arranca el stack de gvisor usando el fd de Go como "device" y SOCKS5 local.
+// (env, thiz) son los argumentos ocultos de JNI; los reales vienen a continuacion.
 //
 //export Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart
-func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart(socksPort C.int, mtu C.int) C.int {
+func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart(env, thiz unsafe.Pointer, socksPort, mtu C.int) C.int {
 	if engineStarted {
 		return 0
 	}
@@ -61,7 +66,7 @@ func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart(socksPort C.int,
 	key.MTU = int(mtu)
 	key.LogLevel = "info"
 	engine.Insert(key)
-	engine.Start() // (v2.7.0: no devuelve error)
+	engine.Start() // (v2.7.0: no devuelve error; log.Fatal -> exit(1))
 	engineStarted = true
 	return 0
 }
@@ -69,7 +74,7 @@ func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart(socksPort C.int,
 // Detiene el stack y cierra el fd.
 //
 //export Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStop
-func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStop() {
+func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStop(env, thiz unsafe.Pointer) {
 	if engineStarted {
 		engine.Stop()
 		engineStarted = false
