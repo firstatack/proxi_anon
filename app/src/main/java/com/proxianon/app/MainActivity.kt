@@ -65,8 +65,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.proxianon.app.ssh.TunnelStatus
 import com.proxianon.app.vpn.SshProfile
+import com.proxianon.app.vpn.TrafficMeter
+import com.proxianon.app.vpn.TrafficStats
 import com.proxianon.app.vpn.TunnelVpnService
 import com.proxianon.app.vpn.VpnUiState
+import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -180,6 +183,7 @@ fun HomeScreen(
     val activeId by vm.activeProfileId.collectAsState()
     val activeProfileName = profiles.firstOrNull { it.id == activeId }?.name ?: "Sin perfil"
     var profileMenuExpanded by remember { mutableStateOf(false) }
+    val stats by TrafficMeter.flow.collectAsState()
 
     Column(
         modifier = Modifier
@@ -341,6 +345,10 @@ fun HomeScreen(
         ) {
             Text(if (state.checking) "Probando salida..." else "Probar salida (IP publica)")
         }
+
+        if (vpnState == VpnUiState.On) {
+            StatsLine(stats)
+        }
         state.exitInfo?.let {
             Text("IP de salida: $it", style = MaterialTheme.typography.bodyMedium)
         }
@@ -449,6 +457,44 @@ private fun HomeScreenPreviewContent() {
         Text("ProxiAnon", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text("Tunel SSH", style = MaterialTheme.typography.bodySmall)
     }
+}
+
+@Composable
+private fun StatsLine(stats: TrafficStats) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Stat("↓ ${fmtBytes(stats.rxBytes)}", Color(0xFF2E7D32))
+        Stat("↑ ${fmtBytes(stats.txBytes)}", MaterialTheme.colorScheme.primary)
+        Stat("Σ ${fmtBytes(stats.totalBytes)}", MaterialTheme.colorScheme.tertiary)
+        Stat("⏱ ${fmtUptime(stats.uptimeSeconds)}", MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun Stat(label: String, color: Color) {
+    Text(label, style = MaterialTheme.typography.labelMedium, color = color, fontWeight = FontWeight.SemiBold)
+}
+
+private fun fmtBytes(raw: Long): String {
+    val b = if (raw < 0) 0 else raw
+    if (b < 1024) return "$b B"
+    val units = arrayOf("KB", "MB", "GB")
+    var v = b.toDouble()
+    var u = -1
+    while (v >= 1024 && u < units.lastIndex) {
+        v /= 1024
+        u++
+    }
+    return String.format(Locale.US, "%.1f %s", v, if (u < 0) "B" else units[u])
+}
+
+private fun fmtUptime(sec: Long): String {
+    val h = sec / 3600
+    val m = (sec % 3600) / 60
+    val s = sec % 60
+    return String.format(Locale.US, "%02d:%02d:%02d", h, m, s)
 }
 
 @Composable

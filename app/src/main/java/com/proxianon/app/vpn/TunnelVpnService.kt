@@ -54,6 +54,8 @@ class TunnelVpnService : VpnService() {
     private var vpnActive = false
     private var reconnectAttempt = 0
     private var monitorJob: Job? = null
+    private var statsJob: Job? = null
+    private var notifyJob: Job? = null
     private var reconnectJob: Job? = null
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
@@ -109,6 +111,7 @@ class TunnelVpnService : VpnService() {
         if (!vpnActive) return
         step("ABIs: ${Build.SUPPORTED_ABIS.joinToString()}")
         try {
+            TrafficMeter.startSession()
             if (tunFd == null) establishInterface()
             step("TUN lista")
             ensureLinkedAndStack()
@@ -120,6 +123,7 @@ class TunnelVpnService : VpnService() {
             VpnState.log("VPN: ACTIVO. Todo el trafico sale por ${creds?.host ?: ""}")
             notifyActive()
             startMonitor()
+            startStatsLoops()
         } catch (t: Throwable) {
             onLinkFailure(t)
         }
@@ -222,6 +226,39 @@ class TunnelVpnService : VpnService() {
         }
     }
 
+    /** Publica stats para la UI (1s) y refresca la notificacion cada 5s. */
+    private fun startStatsLoops() {
+        statsJob?.cancel()
+        statsJob = scope.launch {
+            while (vpnActive && isActive) {
+                TrafficMeter.publish()
+                delay(STATS_PUBLISH_MS)
+            }
+        }
+        notifyJob?.cancel()
+        notifyJob = scope.launch {
+            while (vpnActive && isActive) {
+                delay(NOTIFY_REFRESH_MS)
+                val s = TrafficMeter.flow.value
+                val text = "Activo · ↓ ${fmtBytes(s.rxBytes)}  ↑ ${fmtBytes(s.txBytes)} · ${creds?.host ?: "-"}"
+                val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+                nm.notify(NOTIFICATION_ID, buildNotification(text))
+            }
+        }
+    }
+
+    private fun fmtBytes(b: Long): String {
+        if (b < 1024) return "$b B"
+        val units = arrayOf("KB", "MB", "GB")
+        var v = b.toDouble()
+        var u = -1
+        while (v >= 1024 && u < units.lastIndex) {
+            v /= 1024
+            u++
+        }
+        return String.format(java.util.Locale.US, "%.1f %s", v, if (u < 0) "B" else units[u])
+    }
+
     private fun registerNetworkCallback() {
         if (networkCallback != null) return
         val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -266,6 +303,13 @@ class TunnelVpnService : VpnService() {
         vpnActive = false
         reconnectJob?.cancel()
         reconnectJob = null
+        monitorJob?.cancel()
+        monitorJob = null
+        statsJob?.cancel()
+        statsJob = null
+        notifyJob?.cancel()
+        notifyJob = null
+        TrafficMeter.reset()
         ProfileStore.setVpnWasActive(this, false)
         shutdownStack()
         runCatching { tunFd?.close() }
@@ -328,6 +372,8 @@ class TunnelVpnService : VpnService() {
         private const val NOTIFICATION_ID = 1
         private const val MTU = 1500
         private const val MONITOR_INTERVAL_MS = 3_000L
+        private const val STATS_PUBLISH_MS = 1_000L
+        private const val NOTIFY_REFRESH_MS = 5_000L
         private const val GO_ERROR_FILE = "tun2socks_err.log"
     }
 }

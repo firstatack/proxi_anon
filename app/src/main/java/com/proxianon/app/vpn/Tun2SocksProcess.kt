@@ -84,12 +84,16 @@ class Tun2SocksProcess {
                 try {
                     val n = input.read(buf)
                     if (n <= 0) continue
+                    TrafficMeter.addTx(n.toLong()) // salida del telefono
                     val packet = buf.copyOf(n)
                     if (DnsForwarder.isDnsQuery(packet)) {
                         dnsWorkers?.execute {
                             try {
                                 val response = dns.resolvePacket(packet) ?: return@execute
-                                synchronized(output) { output.write(response) }
+                                synchronized(output) {
+                                    output.write(response)
+                                    TrafficMeter.addRx(response.size.toLong()) // respuesta DNS -> telefono
+                                }
                             } catch (_: Exception) {
                                 // Query perdida; el cliente reintentara.
                             }
@@ -114,6 +118,7 @@ class Tun2SocksProcess {
                 try {
                     val n = Os.read(appPfd.fileDescriptor, buf, 0, buf.size)
                     if (n <= 0) continue
+                    TrafficMeter.addRx(n.toLong()) // entrada al telefono
                     synchronized(output) { output.write(buf, 0, n) }
                 } catch (e: Exception) {
                     if (running) onLog("tun2socks: proxy->TUN: ${e.message}")
