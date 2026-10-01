@@ -283,14 +283,16 @@ private fun VpnSection(
 
             val vpnActive = vpnState == VpnUiState.On
             val vpnStarting = vpnState == VpnUiState.Starting
+            val vpnReconnecting = vpnState is VpnUiState.Reconnecting
             val statusText = when (vpnState) {
                 VpnUiState.Off -> "Desconectado"
                 VpnUiState.Starting -> "Conectando VPN..."
                 VpnUiState.On -> "ACTIVO - todo el trafico por el tunel"
+                is VpnUiState.Reconnecting -> "Reconectando (intento ${vpnState.attempt})..."
                 is VpnUiState.Error -> "Error: ${vpnState.message}"
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (vpnStarting) {
+                if (vpnStarting || vpnReconnecting) {
                     CircularProgressIndicator(modifier = Modifier.width(16.dp), strokeWidth = 2.dp)
                 }
                 Text(
@@ -301,7 +303,7 @@ private fun VpnSection(
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                if (vpnActive || vpnStarting) {
+                if (vpnActive || vpnStarting || vpnReconnecting) {
                     OutlinedButton(onClick = onStopVpn, modifier = Modifier.weight(1f)) {
                         Text("Detener VPN")
                     }

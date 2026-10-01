@@ -7,21 +7,30 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
+import android.util.Log
 import com.proxianon.app.R
 import com.proxianon.app.ssh.SshTunnel
+import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * Modo VPN (Fase 3): enruta TODO el trafico del telefono por el tunel SSH.
+ * Modo VPN (Fase 3): enruta TODO el trafico del telefono por el tunel SSH, con
+ * robustez (Fase 4): reconexion automatica con backoff, persistencia cifrada de
+ * la sesion (START_STICKY reanuda solo) y reaccion a cambios de red.
  *
  * Pipeline:
  *   [apps] TCP -> ruta 0.0.0.0/0 -> interfaz TUN -> la app lee los paquetes
@@ -30,9 +39,8 @@ import kotlinx.coroutines.withContext
  *   [apps] DNS (UDP:53) -> la app lo intercepta en el TUN -> DnsForwarder
  *          (DNS over TCP via SOCKS) -> 1.1.1.1
  *
- * La propia app se excluye del VPN (addDisallowedApplication): el socket SSH y el
- * del DNS proxy salen directo y no hay bucle en el TUN (no hace falta protect()
- * sobre el canal NIO2 de MINA).
+ * Mientras se reconecta el TUN sigue vivo (los paquetes se descartan, no escapan
+ * en claro) -> kill-switch implicito. La propia app se excluye del VPN.
  */
 class TunnelVpnService : VpnService() {
 
@@ -41,20 +49,48 @@ class TunnelVpnService : VpnService() {
     private var tunFd: ParcelFileDescriptor? = null
     private var tun2socks: Tun2SocksProcess? = null
     private var dns: DnsForwarder? = null
-    private var running = false
+    private var creds: SshCredentials? = null
+
+    private var vpnActive = false
+    private var reconnectAttempt = 0
+    private var monitorJob: Job? = null
+    private var reconnectJob: Job? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
+    private fun step(what: String) {
+        Log.d(TAG, "STEP: $what")
+        VpnState.log("vpn: $what")
+    }
 
     // ---------------------------------------------------------------- ciclo
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_STOP) {
-            stopVpn()
-            return START_NOT_STICKY
-        }
-        startForeground(NOTIFICATION_ID, buildNotification("Conectando..."))
-        if (!running) {
-            VpnState.set(VpnUiState.Starting)
-            VpnState.log("VPN: arrancando ...")
-            scope.launch { runVpn() }
+        when (intent?.action) {
+            ACTION_STOP -> {
+                stopVpn()
+                return START_NOT_STICKY
+            }
+            else -> {
+                if (!vpnActive) {
+                    logPreviousGoError() // si el arranque anterior murio en Go, muestra el por que
+                    // Arranque manual (Action "Conectar VPN") o reinicio del sistema
+                    // (START_STICKY, intent null): si estaba activo, reanudamos solo.
+                    val wasActive = ProfileStore.vpnWasActive(this)
+                    creds = VpnSession.request
+                        ?: if (wasActive) ProfileStore.loadLastSession(this) else null
+                    if (creds != null) {
+                        VpnSession.request = null
+                        vpnActive = true
+                        VpnState.set(VpnUiState.Starting)
+                        VpnState.log("VPN: arrancando ...")
+                        startForeground(NOTIFICATION_ID, buildNotification("Conectando..."))
+                        registerNetworkCallback()
+                        scope.launch { run() }
+                    } else {
+                        stopSelf()
+                    }
+                }
+            }
         }
         return START_STICKY
     }
@@ -69,97 +105,187 @@ class TunnelVpnService : VpnService() {
 
     // ------------------------------------------------------------ pipeline
 
-    private suspend fun runVpn() {
-        val req = VpnSession.request
-        if (req == null || req.host.isBlank() || req.username.isBlank()) {
-            fail("VPN: falta la configuracion de la sesion.")
-            return
-        }
-        if (VpnService.prepare(this) != null) {
-            fail("VPN: permiso de VPN no concedido.")
-            return
-        }
-
+    private suspend fun run() {
+        if (!vpnActive) return
+        step("ABIs: ${Build.SUPPORTED_ABIS.joinToString()}")
         try {
-            // 1) Tunel SSH + SOCKS5 local (sesion propia de este servicio).
-            VpnState.log("VPN: conectando SSH a ${req.host}:${req.port} ...")
-            val socksPort = withContext(Dispatchers.IO) {
-                val c = SshTunnel()
-                ssh = c
-                c.connect(req.host, req.port, req.username, req.password)
-            }
-            VpnState.log("VPN: SSH OK, SOCKS5 local en 127.0.0.1:$socksPort")
-
-            // 2) Interfaz TUN (captura todo el trafico IPv4 salvo la propia app).
-            // Builder es clase inner de VpnService: desde la subclase se usa `Builder()`.
-            val builder = Builder()
-            builder.addAddress("10.8.0.2", 24)
-            builder.addRoute("0.0.0.0", 0)
-            // El DNS se anuncia con una IP publica valida (VpnService rechaza loopback
-            // con "Bad address"); la app interceptara esos paquetes UDP:53 en el TUN.
-            builder.addDnsServer("1.1.1.1")
-            builder.setMtu(MTU)
-            builder.setSession("ProxiAnon")
-            // Evita el bucle: el trafico de esta app (SSH, DNS proxy) sale directo.
-            runCatching { builder.addDisallowedApplication(packageName) }
-
-            val fd = builder.establish()
-            if (fd == null) throw IllegalStateException("establish() devolvio null")
-            tunFd = fd
-            VpnState.log("VPN: interfaz TUN creada (fd=${fd.fd})")
-
-            // 3) tun2socks (la app bombea TUN<->tun2socks y intercepta DNS).
-            VpnState.log("VPN: lanzando tun2socks ...")
-            val dnsForwarder = DnsForwarder(socksPort = socksPort)
-            dns = dnsForwarder
-            tun2socks = Tun2SocksProcess().also {
-                it.start(fd, socksPort, MTU, dnsForwarder) { line -> VpnState.log(line) }
-            }
-
-            running = true
+            if (tunFd == null) establishInterface()
+            step("TUN lista")
+            ensureLinkedAndStack()
+            step("stack listo")
+            reconnectAttempt = 0
             VpnState.set(VpnUiState.On)
-            VpnState.log("VPN: ACTIVO. Todo el trafico sale por ${req.host}")
-
-            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.notify(NOTIFICATION_ID, buildNotification("Activo - salida por ${req.host}"))
+            ProfileStore.setVpnWasActive(this, true)
+            creds?.let { ProfileStore.saveLastSession(this, it) }
+            VpnState.log("VPN: ACTIVO. Todo el trafico sale por ${creds?.host ?: ""}")
+            notifyActive()
+            startMonitor()
         } catch (t: Throwable) {
-            fail("VPN: ${if (t.message.isNullOrBlank()) t::class.java.simpleName else t.message}")
+            onLinkFailure(t)
         }
     }
 
-    private fun fail(message: String) {
-        VpnState.log(message)
-        VpnState.set(VpnUiState.Error(message))
-        stopVpn()
+    /** Crea (una sola vez) la interfaz TUN. */
+    private suspend fun establishInterface() {
+        if (VpnService.prepare(this) != null) {
+            throw IllegalStateException("permiso de VPN no concedido")
+        }
+        if (creds == null) throw IllegalStateException("sin credenciales")
+
+        val builder = Builder() // clase inner de VpnService: usa el receiver implicito.
+        builder.addAddress("10.8.0.2", 24)
+        builder.addRoute("0.0.0.0", 0)
+        builder.addDnsServer("1.1.1.1")
+        builder.setMtu(MTU)
+        builder.setSession("ProxiAnon")
+        runCatching { builder.addDisallowedApplication(packageName) }
+
+        val fd = builder.establish()
+        if (fd == null) throw IllegalStateException("establish() devolvio null")
+        tunFd = fd
+        VpnState.log("VPN: interfaz TUN creada (fd=${fd.fd})")
     }
 
-    private fun stopVpn() {
-        running = false
+    /** Re-arma el camino SSH -> SOCKS -> tun2socks + DNS (se puede repetir). */
+    private suspend fun ensureLinkedAndStack() {
+        shutdownStack() // limpia lo anterior manteniendo el TUN
+        val c = creds ?: throw IllegalStateException("sin credenciales")
+        step("conectando SSH a ${c.host}:${c.port}")
+        val socksPort = withContext(Dispatchers.IO) {
+            val t = SshTunnel()
+            ssh = t
+            t.connect(c.host, c.port, c.username, c.password)
+        }
+        step("SSH OK socks=$socksPort")
+        val fd = tunFd ?: throw IllegalStateException("sin interfaz TUN")
+        val dnsForwarder = DnsForwarder(socksPort = socksPort)
+        dns = dnsForwarder
+        step("antes de tun2socks.start")
+        tun2socks = Tun2SocksProcess().also {
+            it.start(fd, socksPort, MTU, dnsForwarder) { line -> VpnState.log(line) }
+        }
+        step("tun2socks.start retorno OK")
+    }
+
+    // ---------------------------------------------------------- reconexion
+
+    /** Caida del enlace: programa reintentos con backoff (no corta el VPN). */
+    private fun onLinkFailure(t: Throwable) {
+        val msg = t.message ?: t::class.java.simpleName
+        VpnState.log("VPN: $msg")
+        scheduleReconnect()
+    }
+
+    private fun scheduleReconnect() {
+        if (!vpnActive || reconnectJob != null) return
+        monitorJob?.cancel()
+        VpnState.set(VpnUiState.Reconnecting(1))
+        reconnectJob = scope.launch {
+            var attempt = 0
+            while (vpnActive && isActive) {
+                attempt++
+                reconnectAttempt = attempt
+                val waitMs = backoff(attempt)
+                VpnState.set(VpnUiState.Reconnecting(attempt))
+                VpnState.log("VPN: reconectando (intento $attempt) en ${waitMs / 1000}s ...")
+                delay(waitMs)
+                try {
+                    ensureLinkedAndStack()
+                    reconnectAttempt = 0
+                    VpnState.set(VpnUiState.On)
+                    ProfileStore.setVpnWasActive(this@TunnelVpnService, true)
+                    notifyActive()
+                    reconnectJob = null
+                    startMonitor()
+                    return@launch
+                } catch (t: Throwable) {
+                    VpnState.log("VPN: reintento fallo: ${t.message ?: t::class.java.simpleName}")
+                }
+            }
+            reconnectJob = null
+        }
+    }
+
+    /** Vigila que el SSH y tun2socks sigan vivos. */
+    private fun startMonitor() {
+        monitorJob?.cancel()
+        monitorJob = scope.launch {
+            while (vpnActive && isActive) {
+                delay(MONITOR_INTERVAL_MS)
+                val alive = ssh?.isConnected == true && tun2socks?.isRunning == true
+                if (!alive) {
+                    VpnState.log("VPN: enlace caido, reconectando ...")
+                    scheduleReconnect()
+                    return@launch
+                }
+            }
+        }
+    }
+
+    private fun registerNetworkCallback() {
+        if (networkCallback != null) return
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onLost(network: Network) {
+                if (vpnActive) {
+                    VpnState.log("VPN: red perdida, reconectando ...")
+                    scheduleReconnect()
+                }
+            }
+        }
+        networkCallback = cb
+        runCatching { cm.registerDefaultNetworkCallback(cb) }
+    }
+
+    /** Vuelca en el log el error de Go del arranque anterior (si murio con exit(1)). */
+    private fun logPreviousGoError() {
+        val f = File(filesDir, GO_ERROR_FILE)
+        if (f.exists() && f.length() > 0L) {
+            runCatching {
+                f.readText().trim().lines().takeLast(20).forEach { VpnState.log("tun2socks(prev): $it") }
+            }
+            runCatching { f.delete() }
+        }
+    }
+
+    // ------------------------------------------------------------- teardown
+
+    /** Para el stack SOCKS manteniendo la interfaz TUN (para reconectar). */
+    private fun shutdownStack() {
+        monitorJob?.cancel()
+        monitorJob = null
         runCatching { tun2socks?.stop() }
-        runCatching { tunFd?.close() }
-        tunFd = null
         tun2socks = null
         dns = null
         runCatching { ssh?.disconnect() }
         ssh = null
+    }
+
+    private fun stopVpn() {
+        step("stopVpn")
+        vpnActive = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        ProfileStore.setVpnWasActive(this, false)
+        shutdownStack()
+        runCatching { tunFd?.close() }
+        tunFd = null
+        networkCallback?.let { cb ->
+            runCatching { (getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(cb) }
+        }
+        networkCallback = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
         VpnState.set(VpnUiState.Off)
         VpnState.log("VPN: desconectado.")
     }
 
-    // ---------------------------------------------------------- notificacion
-
-    private fun ensureChannel() {
+    private fun notifyActive() {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                "ProxiAnon VPN",
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply { setShowBadge(false) }
-        )
+        nm.notify(NOTIFICATION_ID, buildNotification("Activo - salida por ${creds?.host ?: "-"}"))
     }
+
+    // ---------------------------------------------------------- notificacion
 
     private fun buildNotification(text: String): Notification {
         ensureChannel()
@@ -179,10 +305,29 @@ class TunnelVpnService : VpnService() {
             .build()
     }
 
+    private fun ensureChannel() {
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(
+            NotificationChannel(
+                CHANNEL_ID,
+                "ProxiAnon VPN",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply { setShowBadge(false) }
+        )
+    }
+
+    private fun backoff(attempt: Int): Long {
+        val steps = longArrayOf(1_000, 2_000, 5_000, 15_000, 30_000, 60_000)
+        return steps[minOf(attempt - 1, steps.size - 1)]
+    }
+
     companion object {
         const val ACTION_STOP = "com.proxianon.app.vpn.STOP"
+        private const val TAG = "PVPN"
         private const val CHANNEL_ID = "proxianon_vpn"
         private const val NOTIFICATION_ID = 1
         private const val MTU = 1500
+        private const val MONITOR_INTERVAL_MS = 3_000L
+        private const val GO_ERROR_FILE = "tun2socks_err.log"
     }
 }

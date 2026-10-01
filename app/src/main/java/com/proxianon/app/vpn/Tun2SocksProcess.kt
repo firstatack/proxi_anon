@@ -2,6 +2,7 @@ package com.proxianon.app.vpn
 
 import android.os.ParcelFileDescriptor
 import android.system.Os
+import android.util.Log
 import kotlin.concurrent.thread
 import java.io.FileDescriptor
 import java.io.FileInputStream
@@ -33,7 +34,9 @@ class Tun2SocksProcess {
         get() = running
 
     init {
+        Log.d(TAG, "STEP: System.loadLibrary(tun2socks) ...")
         System.loadLibrary("tun2socks")
+        Log.d(TAG, "STEP: loadLibrary OK")
     }
 
     /**
@@ -49,14 +52,16 @@ class Tun2SocksProcess {
         onLog: (String) -> Unit = {},
     ) {
         stop()
-
-        // La libreria crea el socketpair y nos devuelve el fd de la app.
+        step("openPair JNI ...")
         val appFd = tun2socksOpenPair()
+        step("openPair rc=$appFd")
         if (appFd < 0) throw IllegalStateException("tun2socks: no se pudo crear el socketpair (rc=$appFd)")
+        step("fromFd ...")
         val appPfd = ParcelFileDescriptor.fromFd(appFd)
         appFdPfd = appPfd
-
+        step("start JNI ...")
         val rc = tun2socksStart(socksPort, mtu)
+        step("start rc=$rc")
         if (rc != 0) {
             appPfd.close()
             appFdPfd = null
@@ -136,7 +141,12 @@ class Tun2SocksProcess {
     private external fun tun2socksStart(socksPort: Int, mtu: Int): Int
     private external fun tun2socksStop()
 
+    private fun step(what: String) {
+        Log.d(TAG, "STEP: $what")
+    }
+
     private companion object {
         const val DNS_WORKERS = 8
+        const val TAG = "PVPN"
     }
 }

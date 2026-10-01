@@ -21,7 +21,10 @@ package main
 import "C"
 
 import (
+	"bytes"
 	"fmt"
+	"os"
+	"sync"
 	"unsafe"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
@@ -33,7 +36,40 @@ import (
 var (
 	engineStarted = false
 	fdGo          = -1 // extremo del socketpair que usa tun2socks como device
+	errRedirect   sync.Once
 )
+
+// Redirige stderr/stdout (a nivel de fd) a un archivo dentro del filesDir.
+// El log.Fatal de engine.Start hace os.Exit(1) y escribe por stderr: con dup2
+// lo capturamos aunque el logger haya cacheado el descriptor en su init.
+func redirectGoLogs() {
+	pkg, err := currentPackageName()
+	if err != nil {
+		return
+	}
+	dir := "/data/user/0/" + pkg + "/files"
+	_ = os.MkdirAll(dir, 0o755)
+	f, err := os.Create(dir + "/tun2socks_err.log")
+	if err != nil {
+		return
+	}
+	_ = unix.Dup2(int(f.Fd()), 2) // stderr -> archivo
+	_ = unix.Dup2(int(f.Fd()), 1) // stdout -> archivo
+	os.Stdout = f
+	os.Stderr = f
+}
+
+// Como la lib corre en el proceso de la app, /proc/self/cmdline = nombre del paquete.
+func currentPackageName() (string, error) {
+	b, err := os.ReadFile("/proc/self/cmdline")
+	if err != nil {
+		return "", err
+	}
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		b = b[:i]
+	}
+	return string(b), nil
+}
 
 // Crea el socketpair y devuelve el fd del lado de la APP (el de Go se queda aqui).
 // OJO con JNI: toda funcion nativa recibe (JNIEnv*, jobject) como primeros
@@ -60,6 +96,7 @@ func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart(env, thiz unsafe
 	if fdGo < 0 {
 		return C.int(-2)
 	}
+	errRedirect.Do(redirectGoLogs) // captura el log.Fatal del engine en un archivo
 	key := new(engine.Key)
 	key.Device = fmt.Sprintf("fd://%d", fdGo)
 	key.Proxy = fmt.Sprintf("socks5://127.0.0.1:%d", int(socksPort))
@@ -76,13 +113,11 @@ func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStart(env, thiz unsafe
 //export Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStop
 func Java_com_proxianon_app_vpn_Tun2SocksProcess_tun2socksStop(env, thiz unsafe.Pointer) {
 	if engineStarted {
-		engine.Stop()
+		engine.Stop() // cierra el device (y el fd go del socketpair) internamente
 		engineStarted = false
 	}
-	if fdGo >= 0 {
-		_ = unix.Close(fdGo)
-		fdGo = -1
-	}
+	fdGo = -1 // NO cerrar de nuevo: engine.Stop ya cerro fdGo; el runtime puede
+	// haber reutilizado el numero de fd y un unix.Close aqui cerraria algo ajeno.
 }
 
 func main() {}

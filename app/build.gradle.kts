@@ -12,8 +12,8 @@ android {
         applicationId = "com.proxianon.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 5
+        versionName = "0.3.2"
     }
 
     buildTypes {
@@ -81,6 +81,8 @@ dependencies {
     // ExceptionInInitializerError (NoClassDefFoundError: javax/management.*)
     // dentro de ExceptionUtils.peelException(). Se registra en ProxiAnonApp.
     implementation(libs.bouncycastle)
+    // Almacen cifrado de perfiles SSH (clave maestra en Android Keystore).
+    implementation(libs.security.crypto)
     runtimeOnly(libs.slf4j.nop)
 
     debugImplementation(libs.androidx.ui.tooling)

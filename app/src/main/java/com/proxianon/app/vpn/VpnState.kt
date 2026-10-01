@@ -17,6 +17,7 @@ sealed interface VpnUiState {
     data object Off : VpnUiState
     data object Starting : VpnUiState
     data object On : VpnUiState
+    data class Reconnecting(val attempt: Int) : VpnUiState
     data class Error(val message: String) : VpnUiState
 }
 
