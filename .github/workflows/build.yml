@@ -47,19 +47,21 @@ jobs:
           cd /tmp/tun2socks
           SDK="${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}"
           CC_PATH="$SDK/ndk/27.2.12479018/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          GO_FLAGS="-buildmode=c-shared -trimpath -ldflags=-s -w"
 
           # arm64-v8a
           GOOS=android GOARCH=arm64 CGO_ENABLED=1 CC="$CC_PATH/aarch64-linux-android21-clang" \
-            go build $GO_FLAGS -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libtun2socks.so" .
+            go build -buildmode=c-shared -trimpath -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/arm64-v8a/libtun2socks.so" .
 
           # armeabi-v7a
           GOOS=android GOARCH=arm GOARM=7 CGO_ENABLED=1 CC="$CC_PATH/armv7a-linux-androideabi21-clang" \
-            go build $GO_FLAGS -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/armeabi-v7a/libtun2socks.so" .
+            go build -buildmode=c-shared -trimpath -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/armeabi-v7a/libtun2socks.so" .
 
           # x86_64
           GOOS=android GOARCH=amd64 CGO_ENABLED=1 CC="$CC_PATH/x86_64-linux-android21-clang" \
-            go build $GO_FLAGS -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/x86_64/libtun2socks.so" .
+            go build -buildmode=c-shared -trimpath -ldflags="-s -w" \
+            -o "$GITHUB_WORKSPACE/app/src/main/jniLibs/x86_64/libtun2socks.so" .
 
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
