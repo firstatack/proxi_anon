@@ -1,10 +1,14 @@
 package com.proxianon.app
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.proxianon.app.ssh.SshTunnel
 import com.proxianon.app.ssh.TunnelStatus
+import com.proxianon.app.vpn.ProfileStore
 import com.proxianon.app.vpn.SshCredentials
+import com.proxianon.app.vpn.SshProfile
+import com.proxianon.app.vpn.SshProfileStore
 import com.proxianon.app.vpn.VpnSession
 import com.proxianon.app.vpn.VpnState
 import com.proxianon.app.vpn.VpnUiState
@@ -28,8 +32,9 @@ data class UiState(
     val log: List<String> = emptyList(),
 )
 
-class MainViewModel : ViewModel() {
+class MainViewModel(application: Application) : AndroidViewModel(application) {
 
+    private val ctx = application
     private val tunnel = SshTunnel()
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state.asStateFlow()
@@ -37,6 +42,51 @@ class MainViewModel : ViewModel() {
     /** Estado del modo VPN (lo gestiona TunnelVpnService). */
     val vpnState: StateFlow<VpnUiState> = VpnState.flow
     val vpnLog: StateFlow<List<String>> = VpnState.log
+
+    // --------------------------------------------------------------- perfiles
+
+    private val _profiles = MutableStateFlow(SshProfileStore.list(ctx))
+    val profiles: StateFlow<List<SshProfile>> = _profiles.asStateFlow()
+
+    private val _activeProfileId = MutableStateFlow(SshProfileStore.activeId(ctx))
+    val activeProfileId: StateFlow<String?> = _activeProfileId.asStateFlow()
+
+    init {
+        // El perfil activo rellena el formulario al abrir la app.
+        SshProfileStore.activeProfile(ctx)?.let { fillForm(it) }
+    }
+
+    fun saveProfile(profile: SshProfile) {
+        SshProfileStore.save(ctx, profile)
+        _profiles.value = SshProfileStore.list(ctx)
+    }
+
+    fun deleteProfile(id: String) {
+        SshProfileStore.delete(ctx, id)
+        _profiles.value = SshProfileStore.list(ctx)
+        _activeProfileId.value = SshProfileStore.activeId(ctx)
+    }
+
+    /** Marca el perfil como activo y vuelca sus datos en el formulario. */
+    fun activateProfile(id: String) {
+        val p = SshProfileStore.get(ctx, id) ?: return
+        SshProfileStore.setActive(ctx, id)
+        _activeProfileId.value = id
+        fillForm(p)
+    }
+
+    private fun fillForm(p: SshProfile) {
+        _state.update {
+            it.copy(
+                host = p.host,
+                port = p.port.toString(),
+                username = p.username,
+                password = p.password,
+            )
+        }
+        // Mantiene el auto-resume del VPN con estas credenciales.
+        ProfileStore.saveLastSession(ctx, SshCredentials(p.host, p.port, p.username, p.password))
+    }
 
     /** Crea la peticion VPN a partir del formulario actual (los datos se copian, no referencias). */
     fun buildVpnRequest(): SshCredentials? {

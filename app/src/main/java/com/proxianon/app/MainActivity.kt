@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -25,17 +26,31 @@ import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuBox
+import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -49,8 +64,10 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.proxianon.app.ssh.TunnelStatus
+import com.proxianon.app.vpn.SshProfile
 import com.proxianon.app.vpn.TunnelVpnService
 import com.proxianon.app.vpn.VpnUiState
+import java.util.UUID
 
 class MainActivity : ComponentActivity() {
 
@@ -68,13 +85,25 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme {
+            val dark = isSystemInDarkTheme()
+            val colors = if (dark) ProxiAnonDarkColors else ProxiAnonLightColors
+            MaterialTheme(colorScheme = colors) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    HomeScreen(
-                        vm = viewModel(),
-                        onStartVpn = ::onStartVpnClick,
-                        onStopVpn = ::onStopVpnClick,
-                    )
+                    var showAccounts by rememberSaveable { mutableStateOf(false) }
+                    val vm: MainViewModel = viewModel()
+                    if (showAccounts) {
+                        ProfilesScreen(
+                            vm = vm,
+                            onBack = { showAccounts = false },
+                        )
+                    } else {
+                        HomeScreen(
+                            vm = vm,
+                            onStartVpn = ::onStartVpnClick,
+                            onStopVpn = ::onStopVpnClick,
+                            onOpenAccounts = { showAccounts = true },
+                        )
+                    }
                 }
             }
         }
@@ -114,15 +143,43 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private val ProxiAnonDarkColors = darkColorScheme(
+    primary = Color(0xFF59D6C6),
+    onPrimary = Color(0xFF00201D),
+    secondary = Color(0xFF8BE39E),
+    tertiary = Color(0xFFF2C14E),
+    background = Color(0xFF0E1218),
+    onBackground = Color(0xFFE6EDF3),
+    surface = Color(0xFF161C24),
+    onSurface = Color(0xFFE6EDF3),
+    surfaceVariant = Color(0xFF222B37),
+    onSurfaceVariant = Color(0xFFA9B4C0),
+    error = Color(0xFFFF6B6B),
+)
+
+private val ProxiAnonLightColors = lightColorScheme(
+    primary = Color(0xFF00796B),
+    secondary = Color(0xFF2E7D32),
+    tertiary = Color(0xFF8A6D00),
+    surfaceVariant = Color(0xFFE3E9F0),
+    onSurfaceVariant = Color(0xFF43505E),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     vm: MainViewModel = viewModel(),
     onStartVpn: (MainViewModel) -> Unit = {},
     onStopVpn: () -> Unit = {},
+    onOpenAccounts: () -> Unit = {},
 ) {
     val state by vm.state.collectAsState()
     val vpnState by vm.vpnState.collectAsState()
     val vpnLog by vm.vpnLog.collectAsState()
+    val profiles by vm.profiles.collectAsState()
+    val activeId by vm.activeProfileId.collectAsState()
+    val activeProfileName = profiles.firstOrNull { it.id == activeId }?.name ?: "Sin perfil"
+    var profileMenuExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -133,13 +190,50 @@ fun HomeScreen(
     ) {
         Text("ProxiAnon", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text(
-            "Tunel SSH. Fase 3: VPN (todo el trafico) + SOCKS5 local.",
-            style = MaterialTheme.typography.bodySmall
+            "Tu tunel SSH privado: todo el trafico de este telefono sale por tu VPS.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("Servidor", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    ExposedDropdownMenuBox(
+                        expanded = profileMenuExpanded,
+                        onExpandedChange = { profileMenuExpanded = it },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        OutlinedTextField(
+                            value = activeProfileName,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("Perfil") },
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = profileMenuExpanded) },
+                            modifier = Modifier.fillMaxWidth().menuAnchor()
+                        )
+                        ExposedDropdownMenu(
+                            expanded = profileMenuExpanded,
+                            onDismissRequest = { profileMenuExpanded = false }
+                        ) {
+                            profiles.forEach { p ->
+                                DropdownMenuItem(
+                                    text = { Text(p.name) },
+                                    onClick = {
+                                        profileMenuExpanded = false
+                                        vm.activateProfile(p.id)
+                                    }
+                                )
+                            }
+                        }
+                    }
+                    OutlinedButton(onClick = onOpenAccounts) {
+                        Text("Cuentas")
+                    }
+                }
 
                 OutlinedTextField(
                     value = state.host,
@@ -204,7 +298,7 @@ fun HomeScreen(
                 }
                 if (state.mode == TunnelMode.TCP_UDP) {
                     Text(
-                        "TCP+UDP se activa en la Fase 4 (udpgw). Ahora mismo el tunel es TCP.",
+                        "Solo TCP por ahora; el soporte UDP (udpgw) llegara mas adelante.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -214,24 +308,39 @@ fun HomeScreen(
 
         val connected = state.status is TunnelStatus.Connected
         val connecting = state.status is TunnelStatus.Connecting
-
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            Button(
-                onClick = { if (connected || connecting) vm.disconnect() else vm.connect() },
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(if (connected || connecting) "Desconectar" else "Conectar")
-            }
-            OutlinedButton(
-                onClick = vm::testExit,
-                enabled = connected && !state.checking,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(if (state.checking) "Probando..." else "Probar salida")
-            }
+        val connectLabel = when {
+            connecting -> "Conectando..."
+            connected -> "Desconectar"
+            else -> "Conectar"
         }
-
+        val connectColor = when {
+            state.status is TunnelStatus.Error -> MaterialTheme.colorScheme.error
+            connected -> Color(0xFF2E7D32)
+            connecting -> MaterialTheme.colorScheme.tertiary
+            else -> MaterialTheme.colorScheme.primary
+        }
+        Button(
+            onClick = { if (connected || connecting) vm.disconnect() else vm.connect() },
+            modifier = Modifier.fillMaxWidth().height(56.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = connectColor)
+        ) {
+            if (connecting) {
+                CircularProgressIndicator(
+                    modifier = Modifier.width(18.dp).padding(end = 8.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.onPrimary
+                )
+            }
+            Text(connectLabel, style = MaterialTheme.typography.titleMedium)
+        }
         StatusLine(state.status)
+        OutlinedButton(
+            onClick = vm::testExit,
+            enabled = connected && !state.checking,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(if (state.checking) "Probando salida..." else "Probar salida (IP publica)")
+        }
         state.exitInfo?.let {
             Text("IP de salida: $it", style = MaterialTheme.typography.bodyMedium)
         }
@@ -340,4 +449,135 @@ private fun HomeScreenPreviewContent() {
         Text("ProxiAnon", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
         Text("Tunel SSH", style = MaterialTheme.typography.bodySmall)
     }
+}
+
+@Composable
+private fun ProfilesScreen(vm: MainViewModel, onBack: () -> Unit) {
+    val profiles by vm.profiles.collectAsState()
+    val activeId by vm.activeProfileId.collectAsState()
+    var editing by remember { mutableStateOf<SshProfile?>(null) }
+    var deleting by remember { mutableStateOf<SshProfile?>(null) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            TextButton(onClick = onBack) { Text("←") }
+            Text("Cuentas SSH", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            Button(onClick = { editing = SshProfile(name = "", host = "", username = "") }) { Text("Añadir") }
+        }
+
+        if (profiles.isEmpty()) {
+            Text(
+                "Sin cuentas guardadas. Pulsa Anadir para crear una, o usa el formulario de la pantalla principal.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+        profiles.forEach { p ->
+            Card(modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(p.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+                        if (p.id == activeId) {
+                            Spacer(Modifier.width(8.dp))
+                            Text("ACTIVO", color = Color(0xFF2E7D32), style = MaterialTheme.typography.labelSmall)
+                        }
+                    }
+                    Text("${p.username}@${p.host}:${p.port}", style = MaterialTheme.typography.bodySmall)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = { vm.activateProfile(p.id); onBack() }, modifier = Modifier.weight(1f)) {
+                            Text("Usar")
+                        }
+                        OutlinedButton(onClick = { editing = p.copy() }) {
+                            Text("Editar")
+                        }
+                        OutlinedButton(onClick = {
+                            vm.saveProfile(p.copy(id = UUID.randomUUID().toString(), name = "${p.name} (copia)"))
+                        }) {
+                            Text("Dup")
+                        }
+                        OutlinedButton(onClick = { deleting = p }) {
+                            Text("Borrar")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    editing?.let { p ->
+        ProfileEditDialog(
+            initial = p,
+            onSave = { saved ->
+                vm.saveProfile(saved)
+                editing = null
+            },
+            onDismiss = { editing = null }
+        )
+    }
+    deleting?.let { p ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Borrar cuenta") },
+            text = { Text("¿Borrar '${p.name}'?") },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteProfile(p.id); deleting = null }) { Text("Borrar") }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleting = null }) { Text("Cancelar") }
+            }
+        )
+    }
+}
+
+@Composable
+private fun ProfileEditDialog(
+    initial: SshProfile,
+    onSave: (SshProfile) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var name by remember { mutableStateOf(initial.name) }
+    var host by remember { mutableStateOf(initial.host) }
+    var port by remember { mutableStateOf(initial.port.toString()) }
+    var user by remember { mutableStateOf(initial.username) }
+    var pass by remember { mutableStateOf(initial.password) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (initial.name.isBlank()) "Nueva cuenta" else "Editar cuenta") },
+        text = {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Nombre") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("Host o IP") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = port, onValueChange = { port = it.filter(Char::isDigit) }, label = { Text("Puerto") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number), modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("Usuario") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(value = pass, onValueChange = { pass = it }, label = { Text("Contrasena") }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = host.isNotBlank() && user.isNotBlank(),
+                onClick = {
+                    onSave(
+                        initial.copy(
+                            name = name.ifBlank { host },
+                            host = host.trim(),
+                            port = port.toIntOrNull() ?: 22,
+                            username = user.trim(),
+                            password = pass,
+                        )
+                    )
+                }
+            ) { Text("Guardar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } }
+    )
 }
