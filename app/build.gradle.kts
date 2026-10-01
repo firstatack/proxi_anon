@@ -12,8 +12,22 @@ android {
         applicationId = "com.proxianon.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 8
-        versionName = "0.4.2"
+        versionCode = 9
+        versionName = "0.5.0"
+    }
+
+    // Firma de release: solo actua si el CI inyecta el keystore (GitHub Secrets).
+    // Localmente todo sigue con la firma debug.
+    val keystoreFile = System.getenv("PROXIANON_KEYSTORE_FILE")
+    signingConfigs {
+        create("release") {
+            if (keystoreFile != null) {
+                storeFile = file(keystoreFile)
+                storePassword = System.getenv("PROXIANON_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("PROXIANON_KEY_ALIAS")
+                keyPassword = System.getenv("PROXIANON_KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -23,6 +37,12 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
+            // Si hay keystore firmamos release; si no, caemos a debug (build local).
+            signingConfig = if (keystoreFile != null) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

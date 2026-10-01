@@ -66,6 +66,25 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
 
+      - name: Firmar APK release (si hay keystore en Secrets)
+        if: ${{ secrets.PROXIANON_KEYSTORE_B64 != '' }}
+        env:
+          PROXIANON_KEYSTORE_B64: ${{ secrets.PROXIANON_KEYSTORE_B64 }}
+          PROXIANON_KEYSTORE_PASSWORD: ${{ secrets.PROXIANON_KEYSTORE_PASSWORD }}
+          PROXIANON_KEY_ALIAS: ${{ secrets.PROXIANON_KEY_ALIAS }}
+          PROXIANON_KEY_PASSWORD: ${{ secrets.PROXIANON_KEY_PASSWORD }}
+        run: |
+          echo "$PROXIANON_KEYSTORE_B64" | base64 -d > "$HOME/proxianon-release.jks"
+          PROXIANON_KEYSTORE_FILE="$HOME/proxianon-release.jks" ./gradlew assembleRelease --stacktrace
+
+      - name: Subir APK release (firmado)
+        if: ${{ secrets.PROXIANON_KEYSTORE_B64 != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProxiAnon-release
+          path: app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+
       - name: Subir APK como artifact
         uses: actions/upload-artifact@v4
         with:

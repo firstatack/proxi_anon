@@ -1,6 +1,7 @@
 package com.proxianon.app
 
 import android.app.Application
+import com.proxianon.app.vpn.KnownHostsStore
 import org.apache.sshd.common.util.OsUtils
 import org.apache.sshd.common.util.io.PathUtils
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -51,5 +52,8 @@ class ProxiAnonApp : Application() {
             Security.removeProvider(BouncyCastleProvider.PROVIDER_NAME)
             Security.addProvider(BouncyCastleProvider())
         }
+
+        // Almacen de huellas host key (TOFU anti-MITM).
+        runCatching { KnownHostsStore.init(this) }
     }
 }

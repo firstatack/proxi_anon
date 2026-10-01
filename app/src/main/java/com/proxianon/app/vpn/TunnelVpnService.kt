@@ -13,7 +13,6 @@ import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import com.proxianon.app.R
 import com.proxianon.app.ssh.SshTunnel
 import java.io.File
@@ -60,7 +59,6 @@ class TunnelVpnService : VpnService() {
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
     private fun step(what: String) {
-        Log.d(TAG, "STEP: $what")
         VpnState.log("vpn: $what")
     }
 
@@ -367,7 +365,6 @@ class TunnelVpnService : VpnService() {
 
     companion object {
         const val ACTION_STOP = "com.proxianon.app.vpn.STOP"
-        private const val TAG = "PVPN"
         private const val CHANNEL_ID = "proxianon_vpn"
         private const val NOTIFICATION_ID = 1
         private const val MTU = 1500
